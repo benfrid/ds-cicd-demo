@@ -1,0 +1,96 @@
+name: CD
+
+# Only runs after CI passes on the main branch
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write   # needed to push to ghcr.io
+
+jobs:
+  build-and-deploy:
+    name: Build → Push → Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Train model
+        run: uv run python -m ds_demo.models.train
+
+      # ----------------------------------------------------------------
+      # Docker: build + push to GitHub Container Registry (ghcr.io)
+      # ----------------------------------------------------------------
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=,format=short
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      # ----------------------------------------------------------------
+      # Deploy to Hugging Face Spaces via git push
+      # ----------------------------------------------------------------
+      - name: Deploy to Hugging Face Spaces
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_NAME: ${{ secrets.HF_SPACE_NAME }}
+        run: |
+          # HF_SPACE_NAME should be "username/space-name"
+          if [ -z "$HF_TOKEN" ] || [ -z "$HF_SPACE_NAME" ]; then
+            echo "⚠️  HF_TOKEN or HF_SPACE_NAME not set — skipping HF deployment."
+            exit 0
+          fi
+
+          git config --global user.email "ci@github-actions"
+          git config --global user.name "GitHub Actions"
+
+          # Clone the HF Space repo into a temp dir
+          TMPDIR=$(mktemp -d)
+          git clone "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_NAME}" "$TMPDIR"
+
+          # Copy project files (exclude .git and GitHub-specific files)
+          rsync -av --exclude='.git' --exclude='.github' . "$TMPDIR/"
+
+          # Copy the trained model (not in source tree by default)
+          cp -r models/ "$TMPDIR/models/"
+
+          cd "$TMPDIR"
+          git add -A
+          git diff --cached --quiet && echo "No changes to deploy." && exit 0
+          git commit -m "Deploy $(date -u '+%Y-%m-%dT%H:%M:%SZ') — ${{ github.sha }}"
+          git push
+          echo "✅ Deployed to https://huggingface.co/spaces/${HF_SPACE_NAME}"
