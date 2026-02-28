@@ -8,11 +8,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-# Copy only the files needed to resolve & install deps
-COPY pyproject.toml .
-# uv needs a lockfile; create one during build if it doesn't exist
-# (in practice you commit uv.lock to the repo)
-RUN uv sync --no-dev --frozen 2>/dev/null || uv sync --no-dev
+# Copy lockfile + manifest — but NOT src/ yet.
+# --no-install-project installs only third-party deps, skipping the local
+# package build (which needs src/ and hatchling). This keeps the layer cache
+# valid even when application code changes.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --no-dev --frozen --no-install-project
 
 # ============================================================
 # Stage 2: runtime image
@@ -21,7 +22,7 @@ FROM python:3.12-slim AS runtime
 
 WORKDIR /app
 
-# Copy the virtualenv from the builder stage
+# Copy the pre-built virtualenv (third-party deps only)
 COPY --from=builder /app/.venv .venv
 
 # Copy source code and pre-trained model
@@ -30,6 +31,8 @@ COPY models/ models/
 
 # Activate the virtualenv
 ENV PATH="/app/.venv/bin:$PATH"
+# Make ds_demo importable without a formal pip install
+ENV PYTHONPATH="/app/src"
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
