@@ -25,9 +25,8 @@ WORKDIR /app
 # Copy the pre-built virtualenv (third-party deps only)
 COPY --from=builder /app/.venv .venv
 
-# Copy source code and pre-trained model
+# Copy source code
 COPY src/ src/
-COPY models/ models/
 
 # Activate the virtualenv
 ENV PATH="/app/.venv/bin:$PATH"
@@ -35,6 +34,10 @@ ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH="/app/src"
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+
+# Train the model at build time — bakes it into the image.
+# This avoids committing binary .joblib files to git.
+RUN python -m ds_demo.models.train
 
 # HF Spaces expects port 7860
 EXPOSE 7860
